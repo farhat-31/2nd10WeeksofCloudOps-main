@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+
+    stages {
+
+        stage('Git Clone') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/farhat-31/2nd10WeeksofCloudOps-main.git'
+            }
+        }
+
+        stage('Stop Existing Containers') {
+            steps {
+                sh '''
+                    docker rm -f mysql-db || true
+                    docker rm -f backend || true
+                    docker rm -f frontend || true
+                '''
+            }
+        }
+
+        stage('Build MySQL') {
+            steps {
+                sh 'docker build -t mysql-db .'
+            }
+        }
+
+        stage('Run MySQL') {
+            steps {
+                sh '''
+                    docker run -d \
+                      --name mysql-db \
+                      -e MYSQL_ROOT_PASSWORD=root123 \
+                      -p 3306:3306 \
+                      mysql-db
+                '''
+            }
+        }
+
+        stage('Build Backend') {
+            steps {
+                sh 'docker build -t my-backend ./backend'
+            }
+        }
+
+        stage('Run Backend') {
+            steps {
+                sh '''
+                    docker run -d \
+                      --name backend \
+                      --link mysql-db:mysql \
+                      -p 8080:8080 \
+                      my-backend
+                '''
+            }
+        }
+
+        stage('Build Frontend') {
+            steps {
+                sh 'docker build -t my-frontend ./Frontend'
+            }
+        }
+
+        stage('Run Frontend') {
+            steps {
+                sh '''
+                    docker run -d \
+                      --name frontend \
+                      -p 3000:80 \
+                      my-frontend
+                '''
+            }
+        }
+
+        stage('Verify Containers') {
+            steps {
+                sh 'docker ps -a'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'CI/CD deployment successful!'
+        }
+        failure {
+            echo 'CI/CD pipeline failed. Check the console output.'
+        }
+    }
+}
