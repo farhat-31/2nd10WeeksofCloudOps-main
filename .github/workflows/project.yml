@@ -1,91 +1,140 @@
+
 pipeline {
     agent any
 
+    environment {
+        NETWORK = 'app-network'
+        MYSQL_IMAGE = 'mysql-db'
+        BACKEND_IMAGE = 'my-backend'
+        FRONTEND_IMAGE = 'my-frontend'
+    }
+
     stages {
 
-        stage('Git Clone') {
+        stage('Checkout') {
             steps {
                 git branch: 'main',
                     url: 'https://github.com/farhat-31/2nd10WeeksofCloudOps-main.git'
             }
         }
 
-        stage('Stop Existing Containers') {
+        stage('Check Docker') {
+            steps {
+                sh '''
+                    docker --version
+                    docker info
+                '''
+            }
+        }
+
+        stage('Create Network') {
+            steps {
+                sh '''
+                    docker network inspect ${NETWORK} >/dev/null 2>&1 ||
+                    docker network create ${NETWORK}
+                '''
+            }
+        }
+
+        stage('Build Images') {
+            steps {
+                sh '''
+                    docker build -t ${MYSQL_IMAGE}:latest .
+                    docker build -t ${BACKEND_IMAGE}:latest ./backend
+                    docker build -t ${FRONTEND_IMAGE}:latest ./Frontend
+                '''
+            }
+        }
+
+        stage('Deploy MySQL') {
             steps {
                 sh '''
                     docker rm -f mysql-db || true
-                    docker rm -f backend || true
-                    docker rm -f frontend || true
-                '''
-            }
-        }
 
-        stage('Build MySQL') {
-            steps {
-                sh 'docker build -t mysql-db .'
-            }
-        }
-
-        stage('Run MySQL') {
-            steps {
-                sh '''
                     docker run -d \
                       --name mysql-db \
+                      --network ${NETWORK} \
+                      --restart unless-stopped \
                       -e MYSQL_ROOT_PASSWORD=root123 \
-                      -p 3306:3306 \
-                      mysql-db
+                      ${MYSQL_IMAGE}:latest
                 '''
             }
         }
 
-        stage('Build Backend') {
+        stage('Wait for MySQL') {
             steps {
-                sh 'docker build -t my-backend ./backend'
+                sh '''
+                    for i in $(seq 1 60); do
+                        if docker exec mysql-db \
+                          mysqladmin ping -h 127.0.0.1 \
+                          -uroot -proot123 --silent; then
+                            echo "MySQL is ready"
+                            exit 0
+                        fi
+                        sleep 2
+                    done
+
+                    docker logs mysql-db
+                    exit 1
+                '''
             }
         }
 
-        stage('Run Backend') {
+        stage('Deploy Backend') {
             steps {
                 sh '''
+                    docker rm -f backend || true
+
                     docker run -d \
                       --name backend \
-                      --link mysql-db:mysql \
+                      --network ${NETWORK} \
+                      --restart unless-stopped \
+                      -e DB_HOST=mysql-db \
+                      -e DB_PORT=3306 \
                       -p 8080:8080 \
-                      my-backend
+                      ${BACKEND_IMAGE}:latest
                 '''
             }
         }
 
-        stage('Build Frontend') {
-            steps {
-                sh 'docker build -t my-frontend ./Frontend'
-            }
-        }
-
-        stage('Run Frontend') {
+        stage('Deploy Frontend') {
             steps {
                 sh '''
+                    docker rm -f frontend || true
+
                     docker run -d \
                       --name frontend \
+                      --network ${NETWORK} \
+                      --restart unless-stopped \
                       -p 3000:80 \
-                      my-frontend
+                      ${FRONTEND_IMAGE}:latest
                 '''
             }
         }
 
-        stage('Verify Containers') {
+        stage('Verify Deployment') {
             steps {
-                sh 'docker ps -a'
+                sh '''
+                    sleep 5
+                    docker ps -a
+                    docker logs --tail 50 backend
+                    docker logs --tail 50 frontend
+
+                    test "$(docker inspect -f '{{.State.Running}}' mysql-db)" = "true"
+                    test "$(docker inspect -f '{{.State.Running}}' backend)" = "true"
+                    test "$(docker inspect -f '{{.State.Running}}' frontend)" = "true"
+                '''
             }
         }
     }
 
     post {
         success {
-            echo 'CI/CD deployment successful!'
+            echo 'CI/CD deployment completed successfully!'
         }
+
         failure {
-            echo 'CI/CD pipeline failed. Check the console output.'
+            echo 'Pipeline failed. Check the Jenkins Console Output.'
         }
     }
 }
